@@ -1,172 +1,146 @@
-const { ApplicationCommandOptionType, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
-const { Distube } = require('distube');
-const db = require("../mongoDB");
+﻿const { ApplicationCommandOptionType, EmbedBuilder } = require("discord.js");
+const { getLang } = require("../utils/lang");
+const {
+  ensureVoicePermissions,
+  getOrCreatePlayer,
+  search,
+  mapTrack,
+} = require("../utils/music");
+const { buildCard } = require("../utils/ui");
+
 module.exports = {
   name: "play",
-  description: "Начать проигрывание песни.",
+  description: "Запустить музыку по ссылке или названию.",
   permissions: "0x0000000000000800",
   options: [
-        {
-          name: "name",
-          description: "Напишите свое музыкальное название.",
-          type: ApplicationCommandOptionType.String,
-          required: true
-        }
-      ], 
+    {
+      name: "запрос",
+      description: "Введите название трека или URL.",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+    },
+    {
+      name: "источник",
+      description: "В каких недрах интернета будем искать трек?",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: [
+        { name: "SoundCloud", value: "soundcloud" },
+        { name: "Spotify", value: "spotify" },
+        { name: "YouTube", value: "youtube" },
+        { name: "YouTube Music", value: "ytmsearch" },
+      ],
+    },
+  ],
   voiceChannel: true,
   run: async (client, interaction) => {
-    let lang = await db?.musicbot?.findOne({ guildID: interaction.guild.id })
-    lang = lang?.language || client.language
-    lang = require(`../languages/${lang}.js`);
+    const lang = await getLang(client, interaction.guildId);
 
     try {
-      let stp = interaction.options.getString()
+      const requesterName = interaction.user.globalName || interaction.user.username;
+      const requesterMention = `<@${interaction.user.id}>`;
+      const query =
+        interaction.options.getString("запрос") ||
+        interaction.options.getString("name");
+      const source =
+        interaction.options.getString("источник") ||
+        interaction.options.getString("source") ||
+        "soundcloud";
 
-      if (stp === "playlist") {
-        let playlistw = interaction.options.getString('name')
-        let playlist = await db?.playlist?.find().catch(e => { })
-        if (!playlist?.length > 0) return interaction.reply({ content: lang.msg52, ephemeral: true }).catch(e => { })
-
-        let arr = 0
-        for (let i = 0; i < playlist.length; i++) {
-          if (playlist[i]?.playlist?.filter(p => p.name === playlistw)?.length > 0) {
-
-            let playlist_owner_filter = playlist[i].playlist.filter(p => p.name === playlistw)[0].author
-            let playlist_public_filter = playlist[i].playlist.filter(p => p.name === playlistw)[0].public
-
-            if (playlist_owner_filter !== interaction.member.id) {
-              if (playlist_public_filter === false) {
-                return interaction.reply({ content: lang.msg53, ephemeral: true }).catch(e => { })
-              }
-            }
-
-            const music_filter = playlist[i]?.musics?.filter(m => m.playlist_name === playlistw)
-            if (!music_filter?.length > 0) return interaction.reply({ content: lang.msg54, ephemeral: true }).catch(e => { })
-
-            interaction.reply({ content: lang.msg56 }).catch(e => { })
-
-            let songs = []
-            music_filter.map(m => songs.push(m.music_url))
-
-            setTimeout(async () => {
-              const playl = await client?.player?.createCustomPlaylist(songs, {
-                member: interaction.member,
-                properties: { name: playlistw, source: "custom" },
-                parallel: true
-              });
-
-              await interaction.editReply({ content: lang.msg57.replace("{interaction.member.id}", interaction.member.id).replace("{music_filter.length}", music_filter.length) }).catch(e => { })
-
-              try {
-                await client.player.play(interaction.member.voice.channel, playl, {
-                  member: interaction.member,
-                  textChannel: interaction.channel,
-                  interaction
-                })
-              } catch (e) {
-                const embed = new EmbedBuilder()
-                  .setDescription(lang.msg60)
-                  .setColor(client.config.errorColor);
-                await interaction.editReply({ embeds: [embed], ephemeral: true }).catch(e => { });
-              }
-
-              playlist[i]?.playlist?.filter(p => p.name === playlistw).map(async p => {
-                await db.playlist.updateOne({ userID: p.author }, {
-                  $pull: {
-                    playlist: {
-                      name: playlistw
-                    }
-                  }
-                }, { upsert: true }).catch(e => { })
-
-                await db.playlist.updateOne({ userID: p.author }, {
-                  $push: {
-                    playlist: {
-                      name: p.name,
-                      author: p.author,
-                      authorTag: p.authorTag,
-                      public: p.public,
-                      plays: Number(p.plays) + 1,
-                      createdTime: p.createdTime
-                    }
-                  }
-                }, { upsert: true }).catch(e => { })
-              })
-            }, 3000)
-          } else {
-            arr++
-            if (arr === playlist.length) {
-              return interaction.reply({ content: lang.msg58, ephemeral: true }).catch(e => { })
-            }
-          }
-        }
-      }
-      const name = interaction.options.getString('name');
-      if (!name) {
+      if (!query) {
         const embed = new EmbedBuilder()
-          .setDescription(lang.msg59)
+          .setDescription("Введите название трека.")
           .setColor(client.config.errorColor);
-        return interaction.reply({ embeds: [embed], ephemeral: true }).catch(e => {} );
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
       }
-      
-      const embed = new EmbedBuilder()
-      .setDescription(lang.msg61)
-      .setColor(client.config.embedColor);
-      const reply = await interaction.reply({ embeds: [embed] }).catch(e => {});
-      
-    const delay = 5000;
 
-    setTimeout(() => {
-      if (reply && !reply.deleted) {
-        reply.delete().catch(e => {});
+      const canJoin = await ensureVoicePermissions(interaction, client);
+      if (!canJoin) {
+        const embed = new EmbedBuilder()
+          .setDescription("Я не могу подключиться или говорить в вашем голосовом канале.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
       }
-    }, delay);
 
-    let channel = interaction.member.voice.channel;
+      await interaction.deferReply().catch(() => null);
 
-    if (!channel || !channel.permissionsFor(client.user).has(PermissionFlagsBits.ViewChannel)) {
-      return interaction.followUp({
-        embeds: [
-          new EmbedBuilder()
-            .setDescription(`К сожалению, я не могу обнаружить канал в котором вы находитесь!`)
-            .setColor(client.config.errorColor)
-        ],
+      const player = await getOrCreatePlayer(client, interaction);
+      const result = await search(player, client, query, source, {
+        id: interaction.user.id,
+        tag: interaction.user.tag,
+        name: requesterName,
       });
-    }
 
-    if (!channel.permissionsFor(client.user).has(PermissionFlagsBits.Connect) || !channel.permissionsFor(client.user).has(PermissionFlagsBits.Speak)) {
-      return interaction.followUp({
-        embeds: [
-          new EmbedBuilder()
-            .setDescription('К сожалению, у меня недостаточно прав, для подключения к этому каналу!')
-            .setColor(client.config.errorColor)
-        ],
-      });
-    }
-
-    setTimeout(() => {
-      if (reply && !reply.deleted) {
-        reply.delete().catch(e => {});
+      if (!result || !result.tracks || !result.tracks.length) {
+        const embed = new EmbedBuilder()
+          .setDescription("Ничего не найдено.")
+          .setColor(client.config.errorColor);
+        await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => null);
+        return;
       }
-    }, delay);
-      
-      try {
-        await client.player.play(interaction.member.voice.channel, name, {
-          member: interaction.member,
-          textChannel: interaction.channel,
-          interaction,
+
+      const requester = { id: interaction.user.id, tag: interaction.user.tag, name: requesterName };
+      const tracks = result.tracks.map((track) => ({
+        ...track,
+        requester,
+        userData: {
+          ...(track.userData || {}),
+          requesterId: interaction.user.id,
+          requesterTag: interaction.user.tag,
+          requesterName,
+        },
+      }));
+
+      const wasIdle = !player.playing && !player.paused && !player.queue.current;
+      const isPlaylist = String(result.loadType || "").toLowerCase().includes("playlist");
+
+      if (isPlaylist) {
+        player.queue.add(tracks);
+      } else {
+        player.queue.add(tracks[0]);
+      }
+
+      if (wasIdle) {
+        await player.play().catch(() => null);
+      }
+
+      if (isPlaylist) {
+        const playlistName = (result.playlist && result.playlist.name) || "Плейлист";
+        const playlistUrl = result.playlist && result.playlist.url;
+        const payload = buildCard({
+          sections: [
+            [`${requesterMention} добавляет плейлист:`],
+            [
+              playlistUrl ? `## [${playlistName}](${playlistUrl})` : `## ${playlistName}`,
+              `Содержит ${tracks.length} треков`,
+            ],
+          ],
+          color: client.config.embedColor,
+          includeV2: true,
         });
-      } catch (e) {
-        const embed = new EmbedBuilder()
-          .setDescription(lang.msg60)
-          .setColor(client.config.errorColor);
-      
-      
-        await interaction.editReply({ embeds: [embed], ephemeral: true }).catch(e => {} );
-        }
-    } catch (e) {
-      const errorNotifer = require("../functions.js")
-     errorNotifer(client, interaction, e, lang)
+        await interaction.editReply({ ...payload, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
       }
+
+      const song = mapTrack(tracks[0]);
+      const payload = buildCard({
+        sections: [
+          [`${requesterMention} добавляет трек:`],
+          [
+            song.url ? `## [${song.name}](${song.url})` : `## ${song.name}`,
+            `${song.uploader?.name || "Неизвестно"} - \`${song.formattedDuration}\``,
+          ],
+        ],
+        color: client.config.embedColor,
+        includeV2: true,
+      });
+
+      await interaction.editReply({ ...payload, allowedMentions: { parse: [] } }).catch(() => null);
+    } catch (e) {
+      const errorNotifer = require("../functions.js");
+      errorNotifer(client, interaction, e, lang);
+    }
   },
 };

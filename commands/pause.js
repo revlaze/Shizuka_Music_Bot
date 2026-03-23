@@ -1,33 +1,52 @@
-const { EmbedBuilder } = require('discord.js')
-const db = require("../mongoDB");
+const { EmbedBuilder } = require("discord.js");
+const { getLang } = require("../utils/lang");
+const { getPlayer, getCurrentTrack, userCanManageByDj } = require("../utils/music");
+const { updateStoredControllerMessage } = require("../utils/musicPanel");
+
 module.exports = {
   name: "pause",
-  description: "Поставить песню на паузу.",
+  description: "Поставить трек на паузу.",
   permissions: "0x0000000000000800",
   options: [],
   voiceChannel: true,
   run: async (client, interaction) => {
-    const queue = client.player.getQueue(interaction.guild.id);
-    let lang = await db?.musicbot?.findOne({ guildID: interaction.guild.id })
-    lang = lang?.language || client.language
-    lang = require(`../languages/${lang}.js`);
-
+    const lang = await getLang(client, interaction.guildId);
     try {
-
-      if (!queue || !queue.playing) { 
-      const embed = new EmbedBuilder()
-      .setDescription(lang.msg5)
-      .setColor(client.config.errorColor);
-      return interaction.reply({ embeds: [embed], ephemeral: true }).catch(e => { })};
-      const success = queue.pause();
-      const embed = new EmbedBuilder()
-      .setDescription(success ? `${lang.msg48}` : lang.msg41 )
-      .setColor(client.config.embedColor);
-      return interaction.reply({ embeds: [embed],}).catch(e => { })
-
-    } catch (e) {
-      const errorNotifer = require("../functions.js")
-     errorNotifer(client, interaction, e, lang)
+      const player = getPlayer(client, interaction.guildId);
+      if (!player || !getCurrentTrack(player)) {
+        const embed = new EmbedBuilder()
+          .setDescription("Сейчас ничего не играет.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
       }
+
+      if (!userCanManageByDj(player, interaction.user.id)) {
+        const embed = new EmbedBuilder()
+          .setDescription("Вы не являетесь DJ в этом голосовом канале.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
+
+      if (player.paused) {
+        const embed = new EmbedBuilder()
+          .setDescription("Трек уже на паузе.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
+
+      await player.pause().catch(() => null);
+      await updateStoredControllerMessage(client, player, getCurrentTrack(player)).catch(() => null);
+
+      const embed = new EmbedBuilder()
+        .setDescription("Пауза включена.")
+        .setColor(client.config.embedColor);
+      await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+    } catch (e) {
+      const errorNotifer = require("../functions.js");
+      errorNotifer(client, interaction, e, lang);
+    }
   },
-}
+};

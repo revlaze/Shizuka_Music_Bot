@@ -1,47 +1,111 @@
-const { ApplicationCommandOptionType } = require('discord.js')
-const db = require("../mongoDB");
+const { ApplicationCommandOptionType, EmbedBuilder } = require("discord.js");
+
+function getCommandModules(client) {
+  if (client?.commandMap instanceof Map) {
+    return [...client.commandMap.values()];
+  }
+  if (Array.isArray(client?.commands)) {
+    return [...client.commands];
+  }
+  return [];
+}
+
+function normalizeCommandName(raw) {
+  return String(raw || "").trim().replace(/^\/+/, "").toLowerCase();
+}
+
+function formatOptionType(type) {
+  const byValue = {
+    [ApplicationCommandOptionType.String]: "текст",
+    [ApplicationCommandOptionType.Integer]: "число",
+    [ApplicationCommandOptionType.Boolean]: "да/нет",
+    [ApplicationCommandOptionType.User]: "участник",
+    [ApplicationCommandOptionType.Channel]: "канал",
+    [ApplicationCommandOptionType.Role]: "роль",
+    [ApplicationCommandOptionType.Number]: "число",
+    [ApplicationCommandOptionType.Attachment]: "файл",
+  };
+  return byValue[type] || "параметр";
+}
+
 module.exports = {
   name: "help",
-  description: "Список команд.",
+  description: "Список доступных команд.",
   permissions: "0x0000000000000800",
   options: [
+    {
+      name: "command",
+      description: "Показать подробную информацию по конкретной команде.",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+    },
   ],
   showHelp: false,
   run: async (client, interaction) => {
-    let lang = await db?.musicbot?.findOne({ guildID: interaction.guild.id })
-    lang = lang?.language || client.language
-    lang = require(`../languages/${lang}.js`);
     try {
-      const { EmbedBuilder } = require('discord.js');
-      const info = interaction.options.getString('info');
-      if (info) {
-        const cmd_filter = client.commands.filter(x => x.name === info);
-        if (!cmd_filter.length > 0) return interaction.reply({ content: lang.msg127, ephemeral: true }).catch(e => { })
+      const commandModules = getCommandModules(client);
+      const commandName = normalizeCommandName(
+        interaction.options.getString("command") ||
+          interaction.options.getString("команда") ||
+          interaction.options.getString("info"),
+      );
 
-        const cmd = cmd_filter[0]
+      if (commandName) {
+        const command = commandModules.find((item) => normalizeCommandName(item?.name) === commandName);
+        if (!command) {
+          await interaction.reply({
+            content: "Команда не найдена.",
+            flags: 64,
+            allowedMentions: { parse: [] },
+          }).catch(() => null);
+          return;
+        }
+
+        const optionsText = Array.isArray(command.options) && command.options.length
+          ? command.options.map((opt) => {
+            const required = opt.required ? "обязательный" : "необязательный";
+            const type = formatOptionType(opt.type);
+            return `• \`${opt.name}\` (${type}, ${required}) — ${opt.description || "без описания"}`;
+          }).join("\n")
+          : "Опций нет";
+
         const embed = new EmbedBuilder()
-          .setTitle(`Command Info: ${cmd.name}`)
-          .setDescription(`> **Описание: \`${cmd.description}\`**\n> **Опция:**\n${cmd?.options?.map(x => `> **\`${x.name}\` - \`${x.description}\`**`).join("\n")}`)
+          .setTitle(`Информация о команде: /${command.name}`)
+          .setDescription(
+            `**Описание:** ${command.description || "без описания"}\n\n**Опции:**\n${optionsText}`,
+          )
           .setColor(client.config.embedColor)
-          .setTimestamp()
-        return interaction.reply({ embeds: [embed], ephemeral: true }).catch(e => { })
+          .setTimestamp();
 
-      } else {
-        const commands = client.commands.filter(x => x.showHelp !== false);
-
-        const embed = new EmbedBuilder()
-          .setColor(client.config.embedColor)
-          .setTitle("Список доступных команд")
-          .setThumbnail(client.user.displayAvatarURL())
-          .setDescription(`**>>> \`/autoplay\` - Переключить автовосроизведение очереди\n\`/back\` - Вернутся на предыдущий трек\n\`/about\` - Посмотреть информацию о боте\n\`/clear\` - Очистить музыкальную очередь\n\`/filter\` - Установить фильтр на трек\n\`/help\` - Список команд\n\`/loop\` - Зациклить воспроизведение трека\n\`/nowplaying\` - Информация о треке\n\`/pause\` - Поставить трек на паузу\n\`/play\` - Воспроизвести новый трек\n\`/queue\` - Музыкальная очередь\n\`/resume\` - Возобновить прогрывание трека\n\`/search\` - Найти треки (не больше 10 результатов)\n\`/seek\` - Перемотать трек\n\`/shuffle\` - Перемешать музыкальную очередь\n\`/skip\` - Пропустить трек\n\`/stop\` - Остановить проигрывание трека\n\`/time\` - Узнать время проигрывания трека\n\`/volume\` - Поменять громкость трека**`)
-          .setTimestamp()
-          .setFooter({ text: `Amane` })
-        interaction.reply({ embeds: [embed]}).catch(e => { })
+        await interaction.reply({
+          embeds: [embed],
+          flags: 64,
+          allowedMentions: { parse: [] },
+        }).catch(() => null);
+        return;
       }
 
+      const commands = commandModules
+        .filter((cmd) => cmd?.name)
+        .filter((cmd) => cmd.showHelp !== false)
+        .map((cmd) => `\`/${cmd.name}\` — ${cmd.description || "без описания"}`)
+        .sort((a, b) => a.localeCompare(b, "ru"));
+
+      const embed = new EmbedBuilder()
+        .setColor(client.config.embedColor)
+        .setTitle("Список доступных команд")
+        .setThumbnail(client.user.displayAvatarURL())
+        .setDescription(commands.join("\n") || "Команд пока нет.")
+        .setTimestamp();
+
+      await interaction.reply({
+        embeds: [embed],
+        allowedMentions: { parse: [] },
+      }).catch(() => null);
     } catch (e) {
-      const errorNotifer = require("../functions.js")
-     errorNotifer(client, interaction, e, lang)
-      }
+      const errorNotifer = require("../functions.js");
+      errorNotifer(client, interaction, e, {});
+    }
   },
 };
+

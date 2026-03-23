@@ -1,61 +1,61 @@
-const { ApplicationCommandOptionType, EmbedBuilder } = require('discord.js');
+const { ApplicationCommandOptionType, EmbedBuilder } = require("discord.js");
+const { getLang } = require("../utils/lang");
+const { getPlayer, getCurrentTrack } = require("../utils/music");
 const maxVol = require("../config.js").opt.maxVol;
-const db = require("../mongoDB");
+
 module.exports = {
   name: "volume",
-  description: "Изменить громкость музыки.",
+  description: "Изменить громкость проигрывания.",
   permissions: "0x0000000000000800",
-  options: [{
-    name: 'volume',
-    description: 'Введите число, чтобы отрегулировать громкость.',
-    type: ApplicationCommandOptionType.Integer,
-    required: true
-  }],
+  options: [
+    {
+      name: "volume",
+      description: `Громкость от 1 до ${maxVol}.`,
+      type: ApplicationCommandOptionType.Integer,
+      required: true,
+      min_value: 1,
+      max_value: maxVol,
+    },
+  ],
   voiceChannel: true,
   run: async (client, interaction) => {
-    let lang = await db?.musicbot?.findOne({ guildID: interaction.guild.id })
-    lang = lang?.language || client.language
-    lang = require(`../languages/${lang}.js`);
+    const lang = await getLang(client, interaction.guildId);
+
     try {
+      const player = getPlayer(client, interaction.guildId);
+      if (!player || !getCurrentTrack(player)) {
+        const embed = new EmbedBuilder()
+          .setColor(client.config.errorColor)
+          .setDescription("Сейчас ничего не играет.");
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
 
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue || !queue.playing) {
-      const embed = new EmbedBuilder()
-      .setColor(client.config.errorColor)
-      .setDescription(lang.msg5);
-      return interaction.reply({embeds: [embed], ephemeral: true }).catch(e => { })};
+      const volume = interaction.options.getInteger("volume");
+      if (!volume || volume < 1 || volume > maxVol) {
+        const embed = new EmbedBuilder()
+          .setColor(client.config.errorColor)
+          .setDescription(`Неверная громкость. Укажите число от 1 до ${maxVol}.`);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
 
-      const vol = parseInt(interaction.options.getInteger('volume'));
+      if (player.volume === volume) {
+        const embed = new EmbedBuilder()
+          .setColor(client.config.errorColor)
+          .setDescription("Такая громкость уже установлена.");
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
 
-      if (!vol) {
-      const embed = new EmbedBuilder()
-      .setColor(client.config.embedColor)
-      .setDescription(lang.msg87.replace("{queue.volume}", queue.volume).replace("{maxVol}", maxVol));  
-      return interaction.reply({ embeds: [embed], ephemeral: true }).catch(e => { })};
-
-      if (queue.volume === vol) {
-      const embed = new EmbedBuilder()  
-      .setColor(client.config.errorColor)
-      .setDescription(lang.msg88);
-      return interaction.reply({embeds: [embed], ephemeral: true }).catch(e => { })};
-
-      if (vol < 0 || vol > maxVol) {
-      const embed = new EmbedBuilder()
-      .setColor(client.config.errorColor)
-      .setDescription(lang.msg89.replace("{maxVol}", maxVol));
-      return interaction.reply({embeds: [embed], ephemeral: true }).catch(e => { })};
-
-      const success = queue.setVolume(vol);
-  
+      await player.setVolume(volume).catch(() => null);
       const embed = new EmbedBuilder()
         .setColor(client.config.embedColor)
-        .setDescription(success ? `${lang.msg90} **${vol}**/**${maxVol}** 🔊` : lang.msg41);
-      interaction.reply({ embeds: [embed] }).catch(e => { console.error(e); });
-
+        .setDescription(`Громкость изменена: **${volume}**/**${maxVol}**`);
+      await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
     } catch (e) {
-      const errorNotifer = require("../functions.js")
-     errorNotifer(client, interaction, e, lang)
+      const errorNotifer = require("../functions.js");
+      errorNotifer(client, interaction, e, lang);
     }
   },
 };
-

@@ -1,4 +1,4 @@
-function errorNotifer(client, interaction, e, lang) {
+﻿function errorNotifer(client, interaction, e, lang) {
 const { EmbedBuilder } = require("discord.js")
 if(client.errorLog){
 
@@ -10,7 +10,7 @@ if(client.errorLog){
             { name: "Команда", value: `${interaction?.commandName}` },
             { name: "Ошибка", value: `${e.stack}` },
             { name: "Юзер", value: `${interaction?.user?.tag} \`(${interaction?.user?.id})\``, inline: true },
-            { name: "Гильдия", value: `${interaction?.guild?.name} \`(${interaction?.guild?.id})\` - \`${interaction?.guild?.memberCount} members\``, inline: true },
+            { name: "Гильдия", value: `${interaction?.guild?.name} \`(${interaction?.guild?.id})\` - \`${interaction?.guild?.memberCount} участников\``, inline: true },
             { name: "Время", value: `<t:${Math.floor(Date.now()/1000)}:R>`, inline: true },
             { name: "Канал использования команд", value: `${interaction?.channel?.name} \`(${interaction?.channel?.id})\``, inline: true },
             { name: "Голосовой канал юзера", value: `${interaction?.member?.voice?.channel?.name} \`(${interaction?.member?.voice?.channel?.id})\``, inline: true },
@@ -46,8 +46,13 @@ client.channels.cache.get(client?.errorLog)?.send({ embeds: [embed] }).catch(e =
     Голосовой канал юзера: ${interaction?.member?.voice?.channel?.name} (${interaction?.member?.voice?.channel?.id})
     `)
     }
-    return interaction.reply({ content: `${lang.error7}\n\`${e}\``, ephemeral: true }).catch(e => { })
+    if (interaction?.deferred || interaction?.replied) {
+        return interaction.followUp({ content: `${lang.error7}\n\`${e}\``, flags: 64 }).catch(() => { })
+    }
+    return interaction.reply({ content: `${lang.error7}\n\`${e}\``, flags: 64 }).catch(() => { })
 
 }
 
 module.exports = errorNotifer;
+
+

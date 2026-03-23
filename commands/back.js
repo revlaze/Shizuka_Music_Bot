@@ -1,37 +1,47 @@
-const { EmbedBuilder } = require('discord.js')
-const db = require("../mongoDB");
+const { EmbedBuilder } = require("discord.js");
+const { getLang } = require("../utils/lang");
+const { getPlayer, getCurrentTrack, mapTrack, popPreviousTrack } = require("../utils/music");
+
 module.exports = {
   name: "back",
-  description: "Воспроизведение предыдущей дорожки.",
+  description: "Вернуться к предыдущему треку.",
   permissions: "0x0000000000000800",
   options: [],
   voiceChannel: true,
   run: async (client, interaction) => {
-    let lang = await db?.musicbot?.findOne({ guildID: interaction.guild.id })
-    lang = lang?.language || client.language
-    lang = require(`../languages/${lang}.js`);
+    const lang = await getLang(client, interaction.guildId);
     try {
-      const queue = client.player.getQueue(interaction.guild.id);
-      if (!queue || !queue.playing) {
+      const player = getPlayer(client, interaction.guildId);
+      const current = getCurrentTrack(player);
+
+      if (!player || !current) {
+        const embed = new EmbedBuilder()
+          .setDescription("Сейчас ничего не играет.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
+
+      const previousTrack = popPreviousTrack(player, current);
+      if (!previousTrack) {
+        const embed = new EmbedBuilder()
+          .setDescription("Предыдущего трека нет.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
+
+      player.queue.add(previousTrack, 0);
+      await player.skip().catch(() => null);
+
+      const song = mapTrack(previousTrack);
       const embed = new EmbedBuilder()
-      .setDescription(`${lang.msg5}`)
-      .setColor(client.config.errorColor);
-      return interaction.reply({ embeds: [embed], ephemeral: true }).catch(e => { })};
-      try {
-        let song = await queue.previous()
-        const embed = new EmbedBuilder()
-        .setDescription(`${lang.msg18.replace("{queue.previousTracks[1].title}", song.name)}`)
+        .setDescription(`Возврат к предыдущему треку: **${song?.name || "трек"}**`)
         .setColor(client.config.embedColor);
-        interaction.reply({ embeds: [embed], }).catch(e => { });
-      } catch (e) {
-        const embed = new EmbedBuilder()
-        .setDescription(`${lang.msg17}`)
-        .setColor(client.config.errorColor);
-        return interaction.reply({ embeds: [embed], ephemeral: true }).catch(e => { });
-      }
+      await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
     } catch (e) {
-      const errorNotifer = require("../functions.js")
-     errorNotifer(client, interaction, e, lang)
-      }
+      const errorNotifer = require("../functions.js");
+      errorNotifer(client, interaction, e, lang);
+    }
   },
 };

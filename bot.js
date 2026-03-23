@@ -1,125 +1,157 @@
-const { Client, GatewayIntentBits, Partials } = require("discord.js");
-const { DisTube } = require("distube");
-const { SpotifyPlugin } = require("@distube/spotify");
-const { SoundCloudPlugin } = require("@distube/soundcloud");
-const { DeezerPlugin } = require("@distube/deezer");
-const { YtDlpPlugin } = require("@distube/yt-dlp");
+﻿const { Client, GatewayIntentBits, Partials } = require("discord.js");
+const { LavalinkManager } = require("lavalink-client");
 const config = require("./config.js");
+const db = require("./postgresqlDB");
 const fs = require("fs");
+const path = require("path");
+const { stopControllerAutoUpdate } = require("./utils/musicPanel");
+
+const ALL_INTENTS = [...new Set(
+  Object.values(GatewayIntentBits).filter((value) => typeof value === "number"),
+)];
+
 const client = new Client({
-  partials: [
-    Partials.Channel, 
-    Partials.GuildMember, 
-    Partials.User, 
-  ],
-  intents: [
-    GatewayIntentBits.Guilds, 
-    GatewayIntentBits.GuildMembers, 
-    GatewayIntentBits.GuildIntegrations, 
-    GatewayIntentBits.GuildVoiceStates, 
-  ],
+  partials: [Partials.Channel, Partials.GuildMember, Partials.User, Partials.Message, Partials.Reaction],
+  intents: ALL_INTENTS,
 });
 
 client.config = config;
-client.player = new DisTube(client, {
-  leaveOnStop: config.opt.voiceConfig.leaveOnStop,
-  leaveOnFinish: config.opt.voiceConfig.leaveOnFinish,
-  leaveOnEmpty: config.opt.voiceConfig.leaveOnEmpty.status,
-  emitNewSongOnly: true,
-  emitAddSongWhenCreatingQueue: false,
-  emitAddListWhenCreatingQueue: false,
-  plugins: [
-    new SpotifyPlugin(),
-    new SoundCloudPlugin(),
-    new YtDlpPlugin(),
-    new DeezerPlugin(),
-  ],
-  ytdlOptions: {
-    highWaterMark: 1024 * 1024 * 64,
-    quality: "highestaudio",
-    format: "audioonly",
-    liveBuffer: 60000,
-    dlChunkSize: 1024 * 1024 * 4,
-   },
-});
-
-
-const player = client.player;
 client.language = config.language || "ru";
-let lang = require(`./languages/${config.language || "ru"}.js`);
-
-fs.readdir("./events", (_err, files) => {
-  files.forEach((file) => {
-    if (!file.endsWith(".js")) return;
-    const event = require(`./events/${file}`);
-    let eventName = file.split(".")[0];
-    console.log(`${lang.loadclientevent}: ${eventName}`);
-    client.on(eventName, event.bind(null, client));
-    delete require.cache[require.resolve(`./events/${file}`)];
-  });
-});
-
-fs.readdir("./events/player", (_err, files) => {
-  files.forEach((file) => {
-    if (!file.endsWith(".js")) return;
-    const player_events = require(`./events/player/${file}`);
-    let playerName = file.split(".")[0];
-    console.log(`${lang.loadevent}: ${playerName}`);
-    player.on(playerName, player_events.bind(null, client));
-    delete require.cache[require.resolve(`./events/player/${file}`)];
-  });
-});
-
+client.errorLog = config.errorLog;
 client.commands = [];
-fs.readdir(config.commandsDir, (err, files) => {
-  if (err) throw err;
-  files.forEach(async (f) => {
-    try {
-      if (f.endsWith(".js")) {
-        let props = require(`${config.commandsDir}/${f}`);
-        client.commands.push({
-          name: props.name,
-          description: props.description,
-          options: props.options,
-        });
-        console.log(`${lang.loadcmd}: ${props.name}`);
-      }
-    } catch (err) {
-      console.log(err);
-    }
-  });
-});
+client.commandMap = new Map();
 
-if (config.TOKEN || process.env.TOKEN) {
-  client.login(config.TOKEN || process.env.TOKEN).catch((e) => {
-    console.log(lang.error1);
-  });
-} else {
-  setTimeout(() => {
-    console.log(lang.error2);
-  }, 2000);
+const lavalinkNodes = (config.lavalink?.nodes || []).map((node, index) => ({
+  id: node.id || `node-${index + 1}`,
+  host: node.host,
+  port: node.port,
+  authorization: node.password,
+  secure: Boolean(node.secure),
+  retryAmount: node.retryAmount ?? 5,
+  retryDelay: node.retryDelay ?? 5000,
+}));
+
+if (!lavalinkNodes.length) {
+  console.warn("Не настроены узлы Lavalink в config.lavalink.nodes.");
 }
 
+client.player = new LavalinkManager({
+  nodes: lavalinkNodes,
+  autoSkip: true,
+  client: {
+    id: process.env.CLIENT_ID || "0",
+    username: "music-bot",
+  },
+  sendToShard: (guildId, payload) => {
+    const guild = client.guilds.cache.get(guildId);
+    if (guild) guild.shard.send(payload);
+  },
+  queueOptions: {
+    maxPreviousTracks: 25,
+  },
+});
 
-if(config.mongodbURL || process.env.MONGO){
-  const mongoose = require("mongoose")
-  mongoose.connect(config.mongodbURL || process.env.MONGO, {
-  //useNewUrlParser: true,
-  //useUnifiedTopology: false,
-  }).then(async () => {
-    console.log(`База данных MongoDB подключена`)
-  }).catch((err) => {
-    console.log("\nОшибка MongoDB: " + err + "\n\n" + lang.error4)
-    })
-  } else {
-  console.log(lang.error4)
+client.on("raw", (packet) => {
+  try {
+    client.player.sendRawData(packet);
+  } catch {
+    // Менеджер мог ещё не инициализироваться.
+  }
+});
+
+const playerTrackStart = require("./events/player/playSong");
+const playerTrackError = require("./events/player/error");
+const playerQueueEnd = require("./events/player/finish");
+
+client.player.on("trackStart", (player, track, payload) => {
+  playerTrackStart(client, player, track, payload);
+});
+
+client.player.on("trackError", (player, track, payload) => {
+  playerTrackError(client, player, track, payload);
+});
+
+client.player.on("trackStuck", (player, track, payload) => {
+  playerTrackError(client, player, track, payload);
+});
+
+client.player.on("queueEnd", (player, track, payload) => {
+  playerQueueEnd(client, player, track, payload);
+});
+
+client.player.on("playerDestroy", (player) => {
+  stopControllerAutoUpdate(client, player?.guildId);
+});
+
+client.player.on("error", (node, error) => {
+  console.error(`[Lavalink:${node?.id || "неизвестно"}]`, error?.message || error);
+});
+
+function loadEventHandlers() {
+  const eventsDir = path.join(__dirname, "events");
+  const files = fs.readdirSync(eventsDir).filter((file) => file.endsWith(".js"));
+  for (const file of files) {
+    const event = require(path.join(eventsDir, file));
+    const eventName = path.basename(file, ".js");
+    client.on(eventName, event.bind(null, client));
+  }
+}
+
+function loadCommands() {
+  const commandsDir = path.join(__dirname, config.commandsDir || "./commands");
+  const files = fs.readdirSync(commandsDir).filter((file) => file.endsWith(".js"));
+
+  for (const file of files) {
+    const command = require(path.join(commandsDir, file));
+    if (!command?.name) continue;
+
+    client.commands.push({
+      name: command.name,
+      description: command.description || "Описание не указано.",
+      options: command.options || [],
+      dm_permission: false,
+    });
+    client.commandMap.set(command.name, command);
+  }
+}
+
+async function initDatabase() {
+  const hasPgConfig =
+    Boolean(config.postgresqlURL) ||
+    Boolean(process.env.POSTGRES_URL) ||
+    Boolean(process.env.POSTGRESQL_URL) ||
+    Boolean(process.env.DATABASE_URL);
+
+  if (!hasPgConfig) {
+    console.warn("Не указан адрес PostgreSQL. Задайте config.postgresqlURL или DATABASE_URL.");
+    return;
   }
 
+  try {
+    await db.connect();
+    console.log("PostgreSQL подключена.");
+  } catch (error) {
+    console.error("Ошибка подключения PostgreSQL:", error);
+  }
+}
 
 const express = require("express");
 const app = express();
-const http = require("http");
-app.get("/", (request, response) => {
-  response?.sendStatus(200);
-});
-app.listen(process?.env?.PORT);
+app.get("/", (_request, response) => response.sendStatus(200));
+app.listen(process?.env?.PORT || 3000);
+
+loadEventHandlers();
+loadCommands();
+
+(async () => {
+  await initDatabase();
+
+  if (!config.TOKEN && !process.env.TOKEN) {
+    console.error("Отсутствует токен бота в config.TOKEN или process.env.TOKEN.");
+    return;
+  }
+
+  client.login(config.TOKEN || process.env.TOKEN).catch((error) => {
+    console.error("Ошибка входа в Discord:", error);
+  });
+})();

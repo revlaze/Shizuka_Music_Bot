@@ -1,162 +1,200 @@
-const { ApplicationCommandOptionType, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } = require('discord.js');
-const db = require("../mongoDB");
+﻿const {
+  ActionRowBuilder,
+  ApplicationCommandOptionType,
+  EmbedBuilder,
+  StringSelectMenuBuilder,
+} = require("discord.js");
+const { getLang } = require("../utils/lang");
+const {
+  ensureVoicePermissions,
+  getOrCreatePlayer,
+  searchAcrossSources,
+  mapTrack,
+  formatSourceName,
+} = require("../utils/music");
+const { buildCard } = require("../utils/ui");
+
 module.exports = {
   name: "search",
-  description: "Найти музыку.",
+  description: "Найти треки и выбрать нужный.",
   permissions: "0x0000000000000800",
-  options: [{
-    name: 'name',
-    description: 'Введите название музыки, которую хотите воспроизвести.',
-    type: ApplicationCommandOptionType.String,
-    required: true
-  }],
+  options: [
+    {
+      name: "запрос",
+      description: "Введите название трека или URL.",
+      type: ApplicationCommandOptionType.String,
+      required: true,
+    },
+    {
+      name: "источник",
+      description: "В каких недрах интернета будем искать трек?",
+      type: ApplicationCommandOptionType.String,
+      required: false,
+      choices: [
+        { name: "Все источники (по умолчанию)", value: "all" },
+        { name: "SoundCloud", value: "soundcloud" },
+        { name: "Spotify", value: "spotify" },
+        { name: "YouTube", value: "youtube" },
+        { name: "YouTube Music", value: "ytmsearch" },
+      ],
+    },
+  ],
   voiceChannel: true,
   run: async (client, interaction) => {
-    let lang = await db?.musicbot?.findOne({ guildID: interaction.guild.id })
-    lang = lang?.language || client.language
-    lang = require(`../languages/${lang}.js`);
+    const lang = await getLang(client, interaction.guildId);
 
     try {
+      const requesterName = interaction.user.globalName || interaction.user.username;
+      const query =
+        interaction.options.getString("запрос") ||
+        interaction.options.getString("name");
+      const source =
+        interaction.options.getString("источник") ||
+        interaction.options.getString("source") ||
+        "all";
 
-      const name = interaction.options.getString('name')
-      if (!name) {
-      const embed1 = new EmbedBuilder()
-      .setDescription(lang.msg73)
-      .setColor(client.config.errorColor);
-      return interaction.reply({ embeds: [embed1], ephemeral: true }).catch(e => { })};
-      let res
+      if (!query) {
+        const embed = new EmbedBuilder()
+          .setDescription("Введите поисковый запрос.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
 
-try {
-      res = await client.player.search(name, {
-        member: interaction.member,
-        textChannel: interaction.channel,
-        interaction
-      })
-    } catch(e){
-      const embed = new EmbedBuilder()
-      .setDescription(lang.msg60)
-      .setColor(client.config.errorColor);
-      return interaction.reply({ embeds: [embed] }).catch(e => { })
+      const canJoin = await ensureVoicePermissions(interaction, client);
+      if (!canJoin) {
+        const embed = new EmbedBuilder()
+          .setDescription("Я не могу подключиться или говорить в вашем голосовом канале.")
+          .setColor(client.config.errorColor);
+        await interaction.reply({ embeds: [embed], flags: 64, allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
 
-    }
+      await interaction.deferReply().catch(() => null);
 
-      if (!res || !res.length || !res.length > 1){ 
-      const embed = new EmbedBuilder()
-      .setDescription(lang.msg74)
-      .setColor(client.config.errorColor);
-      return interaction.reply({ embeds: [embed], ephemeral: true }).catch(e => { })};
+      const player = await getOrCreatePlayer(client, interaction);
+      const result = await searchAcrossSources(player, client, query, {
+        id: interaction.user.id,
+        tag: interaction.user.tag,
+        name: requesterName,
+      }, source);
+      const tracks = (result?.tracks || []).slice(0, 10);
 
-      const embed = new EmbedBuilder();
-      embed.setColor(client.config.embedColor);
-      embed.setTitle(`${lang.msg75} ${name}`);
+      if (!tracks.length) {
+        const embed = new EmbedBuilder()
+          .setDescription("Ничего не найдено.")
+          .setColor(client.config.errorColor);
+        await interaction.editReply({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => null);
+        return;
+      }
 
-      const maxTracks = res.slice(0, 10);
+      const menuOptions = tracks.map((track, index) => {
+        const mapped = mapTrack(track);
+        return {
+          label: `${index + 1}. ${mapped.name}`.slice(0, 100),
+          value: String(index),
+          description: `${mapped.formattedDuration} - ${mapped.source}`.slice(0, 100),
+        };
+      });
 
-      let track_button_creator = maxTracks.map((song, index) => {
-        return new ButtonBuilder()
-          .setLabel(`${index + 1}`)
-          .setStyle(ButtonStyle.Secondary)
-          .setCustomId(`${index + 1}`)
-      })
+      const select = new StringSelectMenuBuilder()
+        .setCustomId(`search_pick:${interaction.id}`)
+        .setPlaceholder("Выберите трек")
+        .addOptions(menuOptions);
 
-      let buttons1
-      let buttons2
-      if (track_button_creator.length > 10) {
-        buttons1 = new ActionRowBuilder().addComponents(track_button_creator.slice(0, 5))
-        buttons2 = new ActionRowBuilder().addComponents(track_button_creator.slice(5, 10))
+      const payload = buildCard({
+        title: "Результаты поиска",
+        sections: [
+          tracks.map((track, index) => {
+            const mapped = mapTrack(track);
+            return `\`${index + 1}.\` ${mapped.name} - \`${mapped.formattedDuration}\` - ${mapped.source}`;
+          }),
+        ],
+        color: client.config.embedColor,
+        buttons: [select],
+        footer: source === "all"
+          ? `Источники: ${(result?.sources || []).join(", ") || "не определены"}`
+          : `Источник: ${formatSourceName(source)}`,
+        includeV2: true,
+      });
+
+      if (!payload.components || !payload.flags) {
+        const row = new ActionRowBuilder().addComponents(select);
+        await interaction.editReply({
+          embeds: payload.embeds,
+          components: [row],
+          allowedMentions: { parse: [] },
+        });
       } else {
-        if (track_button_creator.length > 5) {
-          buttons1 = new ActionRowBuilder().addComponents(track_button_creator.slice(0, 5))
-          buttons2 = new ActionRowBuilder().addComponents(track_button_creator.slice(5, Number(track_button_creator.length)))
-        } else {
-          buttons1 = new ActionRowBuilder().addComponents(track_button_creator)
+        await interaction.editReply({ ...payload, allowedMentions: { parse: [] } });
+      }
+
+      const message = await interaction.fetchReply().catch(() => null);
+      if (!message) return;
+
+      const collector = message.createMessageComponentCollector({
+        time: 60_000,
+        filter: (i) => i.user.id === interaction.user.id && i.customId === `search_pick:${interaction.id}`,
+      });
+
+      collector.on("collect", async (menuInteraction) => {
+        const selectedIndex = Number(menuInteraction.values?.[0]);
+        const selectedTrack = tracks[selectedIndex];
+        if (!selectedTrack) {
+          await menuInteraction.deferUpdate().catch(() => null);
+          return;
         }
-      }
 
-      let cancel = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setLabel(lang.msg81)
-          .setStyle(ButtonStyle.Danger)
-          .setCustomId('cancel'))
+        const trackWithRequester = {
+          ...selectedTrack,
+          requester: { id: interaction.user.id, tag: interaction.user.tag, name: requesterName },
+          userData: {
+            ...(selectedTrack.userData || {}),
+            requesterId: interaction.user.id,
+            requesterTag: interaction.user.tag,
+            requesterName,
+          },
+        };
 
-      embed.setDescription(`${maxTracks.map((song, i) => `\`${i + 1}.\` \`${song.name} | [${song.formattedDuration}]\``).join('\n')}\n\n${lang.msg76.replace("{maxTracks.length}", maxTracks.length)}`);
-      embed.setTimestamp();
-      embed.setFooter({ text: `Ayoka` })
+        const wasIdle = !player.playing && !player.paused && !player.queue.current;
+        player.queue.add(trackWithRequester);
+        if (wasIdle) await player.play().catch(() => null);
 
-      let code
-      if (buttons1 && buttons2) {
-        code = { embeds: [embed], components: [buttons1, buttons2, cancel] }
-      } else {
-        code = { embeds: [embed], components: [buttons1, cancel] }
-      }
-      interaction.reply(code).then(async Message => {
-        const filter = i => i.user.id === interaction.user.id
-        let collector = await Message.createMessageComponentCollector({ filter, time: 60000 })
-
-
-        collector.on('collect', async (button) => {
-          switch (button.customId) {
-            case 'cancel': {
-              embed.setDescription(`${lang.msg77}`)
-              await interaction.editReply({ embeds: [embed], components: [] }).catch(e => { })
-              return collector.stop();
-            }
-              break;
-
-            default: {
-              embed.setDescription(`**${res[Number(button.customId) - 1].name}** ${lang.msg79}`)
-              await interaction.editReply({ embeds: [embed], components: [] }).catch(e => { })
-              try {
-                await client.player.play(interaction.member.voice.channel, res[Number(button.customId) - 1].url, {
-                  member: interaction.member,
-                  textChannel: interaction.channel,
-                  interaction
-                })
-              } catch (e) {
-                let channel = interaction.member.voice.channel;
-                if (!channel || !channel.permissionsFor(client.user).has(PermissionFlagsBits.ViewChannel)) {
-                  return interaction.followUp({
-                    embeds: [
-                      new EmbedBuilder()
-                        .setDescription(`К сожалению, я не могу обнаружить канал в котором вы находитесь!`)
-                        .setColor(client.config.errorColor)
-                    ],
-                  });
-                }
-
-                if (!channel.permissionsFor(client.user).has(PermissionFlagsBits.Connect) || !channel.permissionsFor(client.user).has(PermissionFlagsBits.Speak)) {
-                  return interaction.followUp({
-                    embeds: [
-                      new EmbedBuilder()
-                        .setDescription('К сожалению, у меня недостаточно прав, для подключения к этому каналу!')
-                        .setColor(client.config.errorColor)
-                    ],
-                  });
-                }
-                const embed = new EmbedBuilder()
-                .setDescription(lang.msg60)
-                .setColor(client.config.errorColor);
-                return interaction.editReply({ embeds: [embed], ephemeral: true }).catch(e => { })
-              }             
-              return collector.stop();
-            }
-          }
+        const song = mapTrack(trackWithRequester);
+        const confirm = buildCard({
+          title: "Добавлено в очередь",
+          sections: [[`**${song.name}**`, `Длительность: \`${song.formattedDuration}\``]],
+          color: client.config.embedColor,
+          includeV2: true,
         });
 
-        collector.on('end', (msg, reason) => {
+        await menuInteraction.update({ ...confirm, allowedMentions: { parse: [] } }).catch(async () => {
+          const embed = new EmbedBuilder()
+            .setColor(client.config.embedColor)
+            .setDescription(`Добавлено в очередь: **${song.name}** \`${song.formattedDuration}\``);
+          await menuInteraction.update({ embeds: [embed], components: [], allowedMentions: { parse: [] } }).catch(() => null);
+        });
+        collector.stop("selected");
+      });
 
-
-          if (reason === 'time') {
-            embed.setDescription(lang.msg80)
-            return interaction.editReply({ embeds: [embed], components: [] }).catch(e => { })
-          }
-        })
-
-      }).catch(e => { })
-
+      collector.on("end", async (_collected, reason) => {
+        if (reason === "selected") return;
+        const expired = buildCard({
+          title: "Время выбора истекло",
+          sections: [["Время поиска истекло."]],
+          color: client.config.embedColor,
+          includeV2: true,
+        });
+        await interaction.editReply({ ...expired, allowedMentions: { parse: [] } }).catch(async () => {
+          const embed = new EmbedBuilder()
+            .setColor(client.config.embedColor)
+            .setDescription("Время поиска истекло.");
+          await interaction.editReply({ embeds: [embed], components: [], allowedMentions: { parse: [] } }).catch(() => null);
+        });
+      });
     } catch (e) {
-      const errorNotifer = require("../functions.js")
-     errorNotifer(client, interaction, e, lang)
-      }
+      const errorNotifer = require("../functions.js");
+      errorNotifer(client, interaction, e, lang);
+    }
   },
 };
