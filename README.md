@@ -4,7 +4,7 @@
 
 ## Возможности
 
-- Воспроизведение музыки из SoundCloud, Spotify, YouTube, YouTube Music, Yandex Music.
+- Воспроизведение музыки из SoundCloud, Spotify, YouTube, YouTube Music.
 - Очередь, пропуск, пауза/продолжение, повтор, перемешивание, перемотка, громкость.
 - DJ-ограничения и голосование за пропуск.
 - Панель управления плеером на Discord Components.
